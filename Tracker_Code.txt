@@ -1,0 +1,102 @@
+function trackReports() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const tabs = ["Daily", "Weekly", "Monthly"];
+  let updateCount = 0;
+  
+  console.log("🚀 STARTING TRACKING (Fixed Row 1 Headers)...");
+
+  tabs.forEach(tabName => {
+    const sheet = ss.getSheetByName(tabName);
+    if (!sheet) return;
+
+    const data = sheet.getDataRange().getValues();
+    const headers = data[0]; // STRICTLY ROW 1
+    
+    for (let i = 1; i < data.length; i++) {
+      const code = data[i][5]; // Column F
+      if (!code) continue;
+
+      const cleanCode = code.toString().trim().toUpperCase();
+      // Search Gmail window: 4 days
+      const threads = GmailApp.search('subject:"[' + cleanCode + ']" newer_than:4d');
+      
+      if (threads.length > 0) {
+        const msg = threads[0].getMessages().pop();
+        const receivedTimestamp = msg.getDate();
+        
+        const success = updateCellColorLogic(sheet, tabName, i + 1, headers, cleanCode, receivedTimestamp);
+        if (success) updateCount++;
+      }
+    }
+  });
+
+  ss.toast("Done! " + updateCount + " cells updated.");
+}
+
+function updateCellColorLogic(sheet, tabName, rowIndex, headers, code, receivedTimestamp) {
+  const rDate = new Date(receivedTimestamp);
+  const receivedMidnight = new Date(rDate.getFullYear(), rDate.getMonth(), rDate.getDate());
+  const receivedHour = rDate.getHours();
+
+  let targetColumn = -1;
+  let targetHeaderDate = null;
+
+  // 1. FIND THE MATCHING COLUMN IN ROW 1
+  for (let j = 0; j < headers.length; j++) {
+    let rawHeader = headers[j];
+    if (!rawHeader || rawHeader === "") continue;
+
+    // Convert header to Date object
+    let headerDate = (rawHeader instanceof Date) ? rawHeader : new Date(rawHeader);
+    
+    // Safety check for serial numbers/Excel-style dates
+    if (typeof rawHeader === 'number') {
+       headerDate = new Date((rawHeader - 25569) * 86400 * 1000);
+    }
+
+    if (isNaN(headerDate.getTime())) continue;
+
+    const headerMidnight = new Date(headerDate.getFullYear(), headerDate.getMonth(), headerDate.getDate());
+
+    // Target the closest header that is NOT in the future relative to the email
+    if (headerMidnight.getTime() <= receivedMidnight.getTime()) {
+      targetColumn = j + 1;
+      targetHeaderDate = headerMidnight;
+    }
+  }
+
+  // 2. APPLY COLORS BASED ON THE DATE DIFFERENCE
+  if (targetColumn !== -1) {
+    const cell = sheet.getRange(rowIndex, targetColumn);
+    const diffTime = receivedMidnight.getTime() - targetHeaderDate.getTime();
+    const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+
+    // Valid window filters
+    if (tabName === "Weekly" && diffDays > 7) return false;
+    if (tabName === "Monthly" && diffDays > 31) return false;
+
+    let resultColor = "";
+
+    if (diffDays === 0) {
+      if (receivedHour < 19) {
+        cell.setBackground("#00ff00"); // GREEN
+        resultColor = "GREEN";
+      } else {
+        cell.setBackground("#ffff00"); // YELLOW
+        resultColor = "YELLOW";
+      }
+    } else if (diffDays === 1) {
+      cell.setBackground("#ffa500"); // ORANGE (1 Day Late)
+      resultColor = "ORANGE";
+    } else {
+      cell.setBackground("#ff0000"); // RED (2+ Days Late)
+      resultColor = "RED";
+    }
+
+    console.log(`✅ [${tabName}] Code: ${code} | Col: ${targetColumn} | Rec: ${receivedTimestamp} | Status: ${resultColor}`);
+    return true;
+  } else {
+    console.log(`❌ [${tabName}] Code: ${code} | No matching header date found for ${receivedMidnight.toDateString()}`);
+    return false;
+  }
+}
